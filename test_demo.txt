@@ -1,0 +1,50 @@
+=== DYNAMIC EVENT SCHEDULER DEMO ===
+
+This file contains sample input commands to test the scheduler:
+
+1. Start the program: ./scheduler.exe
+
+2. Sample test sequence:
+   - Choose option 1 (Add Event)
+   - Enter: "Advanced Algorithms" (name)
+   - Enter: 11 0 (start time: 11:00)
+   - Enter: 90 (duration: 90 minutes)
+   - Enter: 4 (priority: high)
+
+3. This will create a conflict with "Physics Lab" (10:00-11:30)
+   The system will automatically:
+   - Detect the conflict
+   - Rebuild the conflict graph
+   - Reschedule using greedy algorithm
+   - Apply graph coloring if needed
+   - Find alternative time slots
+
+4. Test conflict resolution:
+   - Choose option 1 again
+   - Enter: "Database Systems"
+   - Enter: 15 0 (start time: 15:00)
+   - Enter: 60 (duration: 60 minutes)
+   - Enter: 5 (priority: highest)
+
+5. This conflicts with "Study Group" (14:00-16:00)
+   Watch how the system handles multiple conflicts!
+
+6. View results:
+   - Choose option 3 (View Schedule) to see the final schedule
+   - Choose option 5 (View Conflict Graph) to see the graph structure
+
+EXPECTED BEHAVIOR:
+- High priority events get scheduled first
+- Conflicts are automatically resolved
+- Alternative time slots are suggested
+- The system maintains an optimal schedule
+
+KEY DSA CONCEPTS DEMONSTRATED:
+✓ Graph Coloring (Welsh-Powell Algorithm)
+✓ Greedy Interval Scheduling
+✓ Conflict Detection using Graph Theory
+✓ Dynamic Programming for real-time updates
+✓ Priority-based Decision Making
+
+The program showcases how multiple DSA concepts work together
+to solve complex real-world scheduling problems!

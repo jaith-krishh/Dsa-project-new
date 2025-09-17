@@ -1,0 +1,71 @@
+=== DYNAMIC EVENT SCHEDULER ARCHITECTURE ===
+
+                    INPUT EVENTS
+                         |
+                         v
+    +--------------------------------------------------+
+    |              EVENT MANAGEMENT                    |
+    |  - Add Event                                     |
+    |  - Remove Event                                  |
+    |  - Update Event                                  |
+    +--------------------------------------------------+
+                         |
+                         v
+    +--------------------------------------------------+
+    |            CONFLICT DETECTION                    |
+    |  - Time Overlap Analysis                         |
+    |  - Build Conflict Graph                          |
+    |  - Adjacency List Representation                 |
+    +--------------------------------------------------+
+                         |
+                         v
+    +--------------------------------------------------+
+    |              SCHEDULING ALGORITHMS               |
+    |                                                  |
+    |  +------------------+  +----------------------+  |
+    |  | GREEDY INTERVAL  |  |  GRAPH COLORING      |  |
+    |  | SCHEDULING       |  |  (Welsh-Powell)      |  |
+    |  |                  |  |                      |  |
+    |  | - Sort by        |  | - Sort by degree     |  |
+    |  |   priority       |  | - Color vertices     |  |
+    |  | - Schedule       |  | - Minimize colors    |  |
+    |  |   greedily       |  | - Map to time slots  |  |
+    |  +------------------+  +----------------------+  |
+    +--------------------------------------------------+
+                         |
+                         v
+    +--------------------------------------------------+
+    |            DYNAMIC RESCHEDULING                  |
+    |  - Detect Changes                                |
+    |  - Rebuild Graph                                 |
+    |  - Apply Algorithms                              |
+    |  - Find Alternatives                             |
+    +--------------------------------------------------+
+                         |
+                         v
+    +--------------------------------------------------+
+    |               OUTPUT SCHEDULE                    |
+    |  - Optimized Time Slots                          |
+    |  - Conflict-Free Events                          |
+    |  - Priority-Based Ordering                       |
+    +--------------------------------------------------+
+
+DATA STRUCTURES USED:
+- Event Structure: {id, name, time, duration, priority, color, scheduled}
+- Conflict Graph: Adjacency List with boolean conflict matrix
+- Time Slots: 30-minute granular time slots
+- Priority Queue: For greedy scheduling decisions
+
+ALGORITHM COMPLEXITY:
+- Conflict Detection: O(n²)
+- Graph Coloring: O(n²)  
+- Greedy Scheduling: O(n log n)
+- Overall: O(n²) for dynamic updates
+
+KEY FEATURES:
+✓ Real-time conflict resolution
+✓ Multiple scheduling strategies
+✓ Priority-based decisions
+✓ Alternative time slot suggestions
+✓ Interactive user interface
+✓ Visual conflict graph representation
