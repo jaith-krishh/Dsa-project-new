@@ -334,12 +334,9 @@ class EventScheduler {
         Object.keys(eventsByDate).forEach(date => {
             const dateEvents = eventsByDate[date];
             
-            // Sort by priority (descending) then by start time
+            // Sort by ID (ascending) - events scheduled first get priority
             dateEvents.sort((a, b) => {
-                if (b.priority !== a.priority) {
-                    return b.priority - a.priority;
-                }
-                return a.startTime.localeCompare(b.startTime);
+                return a.id - b.id;
             });
 
             // Mark all as unscheduled first
