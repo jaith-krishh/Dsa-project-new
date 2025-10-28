@@ -9,6 +9,7 @@ class EventScheduler {
         this.currentDate = new Date();
         this.selectedDate = null;
         this.editingEvent = null;
+        this.autoRescheduleEnabled = false;
         
         this.initializeEventListeners();
         this.setDefaultDate();
@@ -34,6 +35,16 @@ class EventScheduler {
 
         document.getElementById('clearBtn').addEventListener('click', () => {
             this.clearAll();
+        });
+
+        document.getElementById('autoRescheduleBtn').addEventListener('click', () => {
+            this.toggleAutomaticRescheduling();
+            const btn = document.getElementById('autoRescheduleBtn');
+            btn.innerHTML = this.autoRescheduleEnabled ? 
+                '<i class="fas fa-magic"></i> Auto-Reschedule: ON' : 
+                '<i class="fas fa-magic"></i> Auto-Reschedule: OFF';
+            btn.classList.toggle('btn-primary', this.autoRescheduleEnabled);
+            btn.classList.toggle('btn-secondary', !this.autoRescheduleEnabled);
         });
 
         document.getElementById('toggleUnscheduled').addEventListener('click', () => {
@@ -304,6 +315,17 @@ class EventScheduler {
         
         // Apply Welsh-Powell coloring for unscheduled events
         this.welshPowellColoring();
+        
+        // Show prioritization info if there are conflicts
+        const unscheduledCount = this.events.filter(e => !e.scheduled).length;
+        if (unscheduledCount > 0) {
+            console.log(`⚡ Prioritization: Priority level → Input order (first added first) → Graph coloring`);
+        }
+        
+        // Perform automatic rescheduling if enabled
+        if (this.autoRescheduleEnabled) {
+            this.performAutomaticRescheduling();
+        }
     }
 
     eventsOverlap(event1, event2) {
@@ -334,10 +356,24 @@ class EventScheduler {
         Object.keys(eventsByDate).forEach(date => {
             const dateEvents = eventsByDate[date];
             
-            // Sort by ID (ascending) - events scheduled first get priority
+            // Sort by priority (descending) then by input order (first added first)
             dateEvents.sort((a, b) => {
-                return a.id - b.id;
+                if (b.priority !== a.priority) {
+                    return b.priority - a.priority;  // Higher priority first
+                }
+                return a.id - b.id;  // Same priority: first added first (input order)
             });
+
+            console.log(`📅 Greedy scheduling for ${date}:`, dateEvents.map((e, index) => ({
+                order: index + 1,
+                name: e.name, 
+                priority: e.priority, 
+                id: `#${e.id}`,
+                time: e.startTime,
+                reason: index === 0 ? 'Highest priority' : 
+                       dateEvents[index-1].priority === e.priority ? 'Same priority, added first' : 
+                       'Lower priority'
+            })));
 
             // Mark all as unscheduled first
             dateEvents.forEach(event => event.scheduled = false);
@@ -415,6 +451,448 @@ class EventScheduler {
         this.showNotification('Rescheduling completed!', 'info');
     }
 
+    // Generate available time slots (30-minute intervals) for full 24-hour period
+    generateTimeSlots(date) {
+        const slots = [];
+        // Generate slots from 00:00 (midnight) to 23:30 (30-minute intervals)
+        for (let hour = 0; hour < 24; hour++) {
+            for (let minute = 0; minute < 60; minute += 30) {
+                const startTime = `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`;
+                slots.push({
+                    start: startTime,
+                    hour: hour,
+                    minute: minute,
+                    totalMinutes: hour * 60 + minute
+                });
+            }
+        }
+        return slots;
+    }
+
+    // Check if an event can be scheduled at a specific time slot
+    canScheduleAtTime(event, timeSlot, duration) {
+        const tempEvent = {
+            ...event,
+            startTime: timeSlot.start,
+            duration: duration,
+            date: event.date
+        };
+
+        // Calculate end time for temp event
+        const totalMinutes = timeSlot.totalMinutes + duration;
+        tempEvent.endTime = `${Math.floor(totalMinutes / 60).toString().padStart(2, '0')}:${(totalMinutes % 60).toString().padStart(2, '0')}`;
+
+        // Check against all scheduled events on the same date
+        return !this.events.some(existingEvent => 
+            existingEvent.id !== event.id && 
+            existingEvent.scheduled && 
+            existingEvent.date === event.date &&
+            this.eventsOverlap(tempEvent, existingEvent)
+        );
+    }
+
+    // Find available time slots for an unscheduled event
+    findAvailableTimeSlots(event) {
+        const allSlots = this.generateTimeSlots(event.date);
+        const availableSlots = [];
+
+        allSlots.forEach(slot => {
+            // Check if event fits in this slot (considering duration)
+            const endTotalMinutes = slot.totalMinutes + event.duration;
+            if (endTotalMinutes <= 24 * 60) { // Don't go past midnight (24:00)
+                if (this.canScheduleAtTime(event, slot, event.duration)) {
+                    // Handle end time that might go into next day
+                    let endHour = Math.floor(endTotalMinutes / 60);
+                    let endMinute = endTotalMinutes % 60;
+                    
+                    // If end time is 24:00, convert to 00:00 of next day
+                    if (endHour >= 24) {
+                        endHour = endHour % 24;
+                    }
+                    
+                    const endTime = `${endHour.toString().padStart(2, '0')}:${endMinute.toString().padStart(2, '0')}`;
+                    availableSlots.push({
+                        ...slot,
+                        end: endTime,
+                        duration: event.duration
+                    });
+                }
+            }
+        });
+
+        return availableSlots;
+    }
+
+    // Calculate preference score for time slots (closer to original time = higher score)
+    calculateTimeSlotPreference(originalTime, slotTime) {
+        const originalMinutes = this.timeToMinutes(originalTime);
+        const slotMinutes = slotTime.totalMinutes;
+        const timeDifference = Math.abs(originalMinutes - slotMinutes);
+        
+        // Prefer slots closer to original time (lower difference = higher score)
+        const maxDifference = 17 * 60; // Max 17 hours difference
+        return Math.max(0, maxDifference - timeDifference);
+    }
+
+    // Convert time string to minutes
+    timeToMinutes(timeString) {
+        const [hours, minutes] = timeString.split(':').map(Number);
+        return hours * 60 + minutes;
+    }
+
+    // Get sorted available time slots with intelligent proximity-based preference
+    getSortedAvailableSlots(event) {
+        const originalMinutes = this.timeToMinutes(event.startTime);
+        const originalEndMinutes = originalMinutes + event.duration;
+        const availableSlots = this.findAvailableTimeSlots(event);
+        
+        // Add preference scores and categorize by proximity
+        const slotsWithPreference = availableSlots.map(slot => {
+            const timeDifference = Math.abs(originalMinutes - slot.totalMinutes);
+            
+            // Special handling: check if this slot starts right after the original event ends
+            const isImmediatelyAfter = slot.totalMinutes === originalEndMinutes;
+            
+            // Categorize slots by proximity (in minutes)
+            let proximityCategory;
+            if (isImmediatelyAfter) proximityCategory = 0;        // Immediately after (best)
+            else if (timeDifference <= 30) proximityCategory = 1; // ±30 min
+            else if (timeDifference <= 60) proximityCategory = 2; // ±1 hour
+            else if (timeDifference <= 120) proximityCategory = 3; // ±2 hours
+            else if (timeDifference <= 240) proximityCategory = 4; // ±4 hours
+            else proximityCategory = 5; // >4 hours
+            
+            return {
+                ...slot,
+                timeDifference,
+                proximityCategory,
+                preferenceScore: this.calculateTimeSlotPreference(event.startTime, slot),
+                isBeforeOriginal: slot.totalMinutes < originalMinutes,
+                isImmediatelyAfter
+            };
+        });
+
+        // Sort by proximity category first, then by time difference
+        slotsWithPreference.sort((a, b) => {
+            // Primary sort: proximity category (closer = better)
+            if (a.proximityCategory !== b.proximityCategory) {
+                return a.proximityCategory - b.proximityCategory;
+            }
+            
+            // Secondary sort: actual time difference (smaller = better)
+            if (a.timeDifference !== b.timeDifference) {
+                return a.timeDifference - b.timeDifference;
+            }
+            
+            // Tertiary sort: prefer slots after original time slightly
+            return a.isBeforeOriginal - b.isBeforeOriginal;
+        });
+
+        return slotsWithPreference;
+    }
+
+    // Get slots grouped by proximity for better user choice presentation
+    getSlotsByProximity(event) {
+        const sortedSlots = this.getSortedAvailableSlots(event);
+        
+        const proximityGroups = {
+            perfect: [],   // Immediately after event ends
+            immediate: [], // ±30 min
+            nearby: [],    // ±1 hour
+            close: [],     // ±2 hours
+            moderate: [],  // ±4 hours
+            distant: []    // >4 hours
+        };
+
+        sortedSlots.forEach(slot => {
+            switch (slot.proximityCategory) {
+                case 0: proximityGroups.perfect.push(slot); break;
+                case 1: proximityGroups.immediate.push(slot); break;
+                case 2: proximityGroups.nearby.push(slot); break;
+                case 3: proximityGroups.close.push(slot); break;
+                case 4: proximityGroups.moderate.push(slot); break;
+                case 5: proximityGroups.distant.push(slot); break;
+            }
+        });
+
+        return proximityGroups;
+    }
+
+    // Generate HTML for proximity-grouped time slots
+    generateProximityGroupsHTML(event, proximityGroups) {
+        const groupConfigs = [
+            { key: 'perfect', title: 'Perfect Match', subtitle: 'Right after event ends', icon: 'fas fa-star', color: 'perfect' },
+            { key: 'immediate', title: 'Immediate Options', subtitle: '±30 minutes', icon: 'fas fa-bullseye', color: 'success' },
+            { key: 'nearby', title: 'Nearby Options', subtitle: '±1 hour', icon: 'fas fa-crosshairs', color: 'info' },
+            { key: 'close', title: 'Close Options', subtitle: '±2 hours', icon: 'fas fa-dot-circle', color: 'warning' },
+            { key: 'moderate', title: 'Moderate Distance', subtitle: '±4 hours', icon: 'fas fa-circle', color: 'secondary' },
+            { key: 'distant', title: 'Distant Options', subtitle: '>4 hours', icon: 'fas fa-circle-o', color: 'muted' }
+        ];
+
+        let html = '';
+        
+        groupConfigs.forEach(config => {
+            const slots = proximityGroups[config.key];
+            if (slots.length > 0) {
+                html += `
+                    <div class="proximity-group ${config.color}">
+                        <div class="group-header">
+                            <i class="${config.icon}"></i>
+                            <span class="group-title">${config.title}</span>
+                            <span class="group-subtitle">${config.subtitle}</span>
+                            <span class="group-count">${slots.length} option${slots.length > 1 ? 's' : ''}</span>
+                        </div>
+                        <div class="group-slots">
+                            ${slots.slice(0, 3).map((slot, index) => `
+                                <div class="time-slot-option compact ${(index === 0 && config.key === 'perfect') || (index === 0 && config.key === 'immediate' && proximityGroups.perfect.length === 0) ? 'best-option' : ''}" 
+                                     onclick="scheduler.rescheduleEvent(${event.id}, '${slot.start}', '${slot.end}')">
+                                    <div class="slot-time">
+                                        <i class="fas fa-clock"></i>
+                                        ${slot.start} - ${slot.end}
+                                    </div>
+                                    <div class="slot-info">
+                                        ${slot.isImmediatelyAfter ? 
+                                            '<span class="perfect-badge"><i class="fas fa-star"></i> Perfect Match</span>' : 
+                                            (index === 0 && config.key === 'immediate' && proximityGroups.perfect.length === 0) ?
+                                            '<span class="best-badge"><i class="fas fa-star"></i> Best Match</span>' : 
+                                            `<span class="time-diff">${this.formatTimeDifference(slot.timeDifference)} ${slot.isBeforeOriginal ? 'before' : 'after'}</span>`
+                                        }
+                                    </div>
+                                </div>
+                            `).join('')}
+                            ${slots.length > 3 ? `
+                                <div class="more-slots-indicator">
+                                    <i class="fas fa-ellipsis-h"></i>
+                                    <span>+${slots.length - 3} more in this range</span>
+                                </div>
+                            ` : ''}
+                        </div>
+                    </div>
+                `;
+            }
+        });
+
+        return html || '<p class="no-options">No suitable time slots found.</p>';
+    }
+
+    // Format time difference in a user-friendly way
+    formatTimeDifference(minutes) {
+        if (minutes < 60) {
+            return `${minutes}min`;
+        } else {
+            const hours = Math.floor(minutes / 60);
+            const remainingMinutes = minutes % 60;
+            return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
+        }
+    }
+
+    // Reschedule an event to a new time slot
+    rescheduleEvent(eventId, newStartTime, newEndTime) {
+        const event = this.events.find(e => e.id === eventId);
+        if (!event) return;
+
+        const oldTime = `${event.startTime} - ${event.endTime}`;
+        
+        // Update event times
+        event.startTime = newStartTime;
+        event.endTime = newEndTime;
+        event.scheduled = true;
+
+        // Recalculate conflicts and update display
+        this.detectConflicts();
+        this.saveEventsToStorage();
+        this.updateDisplay();
+        
+        // Close modal and show success notification
+        this.closeModal();
+        this.showNotification(
+            `✅ Rescheduled "${event.name}" from ${oldTime} to ${newStartTime} - ${newEndTime}`, 
+            'success'
+        );
+    }
+
+    // Show all available time slots in a separate modal with proximity grouping
+    showAllTimeSlots(eventId) {
+        const event = this.events.find(e => e.id === eventId);
+        if (!event) return;
+
+        const proximityGroups = this.getSlotsByProximity(event);
+        const totalSlots = Object.values(proximityGroups).flat().length;
+        
+        // Create a new modal for all time slots
+        const allSlotsModal = document.createElement('div');
+        allSlotsModal.className = 'modal active';
+        allSlotsModal.id = 'allSlotsModal';
+        
+        allSlotsModal.innerHTML = `
+            <div class="modal-content large-modal">
+                <div class="modal-header">
+                    <h3><i class="fas fa-clock"></i> All Available Time Slots for "${event.name}"</h3>
+                    <button class="modal-close" onclick="this.closest('.modal').remove()">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div class="slots-info">
+                        <p><strong>Original Time:</strong> ${event.startTime} - ${event.endTime}</p>
+                        <p><strong>Duration:</strong> ${event.duration} minutes</p>
+                        <p><strong>Available Slots:</strong> ${totalSlots} options found, organized by proximity</p>
+                    </div>
+                    
+                    <div class="all-slots-organized">
+                        ${this.generateAllSlotsHTML(event, proximityGroups)}
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-secondary" onclick="this.closest('.modal').remove()">
+                        <i class="fas fa-times"></i> Cancel
+                    </button>
+                </div>
+            </div>
+        `;
+        
+        document.body.appendChild(allSlotsModal);
+    }
+
+    // Generate a summary of available slots by proximity
+    generateSlotsSummary(proximityGroups) {
+        const summaryItems = [
+            { key: 'perfect', label: 'Perfect', icon: 'fas fa-star', color: '#9f7aea' },
+            { key: 'immediate', label: '±30min', icon: 'fas fa-bullseye', color: '#38a169' },
+            { key: 'nearby', label: '±1h', icon: 'fas fa-crosshairs', color: '#3182ce' },
+            { key: 'close', label: '±2h', icon: 'fas fa-dot-circle', color: '#ed8936' },
+            { key: 'moderate', label: '±4h', icon: 'fas fa-circle', color: '#718096' },
+            { key: 'distant', label: '>4h', icon: 'fas fa-circle-o', color: '#cbd5e0' }
+        ];
+
+        return `
+            <div class="summary-badges">
+                ${summaryItems.map(item => {
+                    const count = proximityGroups[item.key].length;
+                    return count > 0 ? `
+                        <div class="summary-badge" style="border-color: ${item.color}; color: ${item.color};">
+                            <i class="${item.icon}"></i>
+                            <span class="badge-count">${count}</span>
+                            <span class="badge-label">${item.label}</span>
+                        </div>
+                    ` : '';
+                }).join('')}
+            </div>
+        `;
+    }
+
+    // Generate HTML for all slots organized by proximity
+    generateAllSlotsHTML(event, proximityGroups) {
+        const groupConfigs = [
+            { key: 'perfect', title: 'Perfect Match', subtitle: 'Right after event ends', icon: 'fas fa-star', color: 'perfect' },
+            { key: 'immediate', title: 'Immediate Options', subtitle: '±30 minutes', icon: 'fas fa-bullseye', color: 'success' },
+            { key: 'nearby', title: 'Nearby Options', subtitle: '±1 hour', icon: 'fas fa-crosshairs', color: 'info' },
+            { key: 'close', title: 'Close Options', subtitle: '±2 hours', icon: 'fas fa-dot-circle', color: 'warning' },
+            { key: 'moderate', title: 'Moderate Distance', subtitle: '±4 hours', icon: 'fas fa-circle', color: 'secondary' },
+            { key: 'distant', title: 'Distant Options', subtitle: '>4 hours', icon: 'fas fa-circle-o', color: 'muted' }
+        ];
+
+        let html = '';
+        
+        groupConfigs.forEach(config => {
+            const slots = proximityGroups[config.key];
+            if (slots.length > 0) {
+                html += `
+                    <div class="all-slots-group">
+                        <div class="group-header-full">
+                            <i class="${config.icon}"></i>
+                            <span class="group-title">${config.title}</span>
+                            <span class="group-subtitle">${config.subtitle}</span>
+                            <span class="group-count">${slots.length} option${slots.length > 1 ? 's' : ''}</span>
+                        </div>
+                        <div class="slots-grid">
+                            ${slots.map((slot, index) => `
+                                <div class="time-slot-card ${config.key === 'perfect' || (index === 0 && config.key === 'immediate' && proximityGroups.perfect.length === 0) ? 'best-option' : ''}" 
+                                     onclick="scheduler.rescheduleEvent(${event.id}, '${slot.start}', '${slot.end}'); this.closest('.modal').remove();">
+                                    <div class="slot-header">
+                                        <span class="slot-time">${slot.start} - ${slot.end}</span>
+                                        ${slot.isImmediatelyAfter || (index === 0 && config.key === 'immediate' && proximityGroups.perfect.length === 0) ? '<span class="best-star"><i class="fas fa-star"></i></span>' : ''}
+                                    </div>
+                                    <div class="slot-details">
+                                        <div class="time-difference">
+                                            <i class="fas fa-${slot.isImmediatelyAfter ? 'play' : slot.isBeforeOriginal ? 'arrow-left' : 'arrow-right'}"></i>
+                                            ${slot.isImmediatelyAfter ? 'Immediately after' : `${this.formatTimeDifference(slot.timeDifference)} ${slot.isBeforeOriginal ? 'before' : 'after'}`}
+                                        </div>
+                                        <div class="proximity-indicator">
+                                            <i class="fas fa-location-arrow"></i>
+                                            ${config.subtitle}
+                                        </div>
+                                    </div>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                `;
+            }
+        });
+
+        return html || '<p class="no-options">No suitable time slots found.</p>';
+    }
+
+    // Perform automatic rescheduling for unscheduled events (optional feature)
+    performAutomaticRescheduling() {
+        const unscheduledEvents = this.events.filter(event => !event.scheduled);
+        let rescheduledCount = 0;
+        const rescheduledDetails = [];
+
+        unscheduledEvents.forEach(event => {
+            const proximityGroups = this.getSlotsByProximity(event);
+            
+            // Try perfect slots first (immediately after), then immediate (±30 min), then nearby (±1 hour)
+            const prioritySlots = [
+                ...proximityGroups.perfect,
+                ...proximityGroups.immediate,
+                ...proximityGroups.nearby
+            ];
+            
+            if (prioritySlots.length > 0) {
+                const bestSlot = prioritySlots[0];
+                const oldTime = `${event.startTime}-${event.endTime}`;
+                
+                event.startTime = bestSlot.start;
+                event.endTime = bestSlot.end;
+                event.scheduled = true;
+                rescheduledCount++;
+                
+                rescheduledDetails.push({
+                    name: event.name,
+                    oldTime,
+                    newTime: `${bestSlot.start}-${bestSlot.end}`,
+                    timeDiff: this.formatTimeDifference(bestSlot.timeDifference),
+                    direction: bestSlot.isBeforeOriginal ? 'before' : 'after'
+                });
+                
+                console.log(`Auto-rescheduled "${event.name}" from ${oldTime} to ${bestSlot.start}-${bestSlot.end} (${this.formatTimeDifference(bestSlot.timeDifference)} ${bestSlot.isBeforeOriginal ? 'before' : 'after'})`);
+            }
+        });
+
+        if (rescheduledCount > 0) {
+            const summary = rescheduledDetails.map(detail => 
+                `${detail.name}: ${detail.timeDiff} ${detail.direction}`
+            ).join(', ');
+            
+            this.showNotification(
+                `🤖 Auto-rescheduled ${rescheduledCount} event(s): ${summary}`, 
+                'success'
+            );
+        }
+    }
+
+    // Enable/disable automatic rescheduling
+    toggleAutomaticRescheduling() {
+        this.autoRescheduleEnabled = !this.autoRescheduleEnabled;
+        
+        if (this.autoRescheduleEnabled) {
+            this.detectConflicts(); // Re-run with auto-rescheduling
+            this.showNotification('🤖 Automatic rescheduling enabled', 'info');
+        } else {
+            this.showNotification('🔧 Automatic rescheduling disabled - manual control only', 'info');
+        }
+    }
+
     clearAll() {
         if (confirm('Are you sure you want to clear all events?')) {
         this.events = [];
@@ -457,7 +935,25 @@ class EventScheduler {
         document.getElementById('conflictCount').textContent = this.conflicts.length;
         
         const scheduledEvents = this.events.filter(event => event.scheduled);
-        document.getElementById('unscheduledCount').textContent = this.events.length - scheduledEvents.length;
+        const unscheduledCount = this.events.length - scheduledEvents.length;
+        document.getElementById('unscheduledCount').textContent = unscheduledCount;
+        
+        // Update unscheduled count color based on availability of solutions
+        const unscheduledElement = document.getElementById('unscheduledCount');
+        if (unscheduledCount > 0) {
+            const unscheduledEvents = this.events.filter(event => !event.scheduled);
+            const hasAvailableSlots = unscheduledEvents.some(event => 
+                this.getSortedAvailableSlots(event).length > 0
+            );
+            
+            unscheduledElement.style.color = hasAvailableSlots ? '#ed8936' : '#e53e3e';
+            unscheduledElement.title = hasAvailableSlots ? 
+                'Some unscheduled events have available time slots' : 
+                'No available time slots found for unscheduled events';
+        } else {
+            unscheduledElement.style.color = '#38a169';
+            unscheduledElement.title = 'All events successfully scheduled';
+        }
     }
 
     updateScheduleView() {
@@ -487,6 +983,42 @@ class EventScheduler {
         div.className = `schedule-item priority-${event.priority} ${event.scheduled ? '' : 'unscheduled'}`;
         div.onclick = () => this.showEventModal(event);
 
+        let quickRescheduleButton = '';
+        if (!event.scheduled) {
+            const proximityGroups = this.getSlotsByProximity(event);
+            const bestSlots = [
+                ...proximityGroups.perfect,
+                ...proximityGroups.immediate,
+                ...proximityGroups.nearby,
+                ...proximityGroups.close
+            ];
+            
+            if (bestSlots.length > 0) {
+                const bestSlot = bestSlots[0];
+                const timeDiff = this.formatTimeDifference(bestSlot.timeDifference);
+                const direction = bestSlot.isBeforeOriginal ? 'before' : 'after';
+                
+                quickRescheduleButton = `
+                    <div class="quick-reschedule" onclick="event.stopPropagation(); scheduler.rescheduleEvent(${event.id}, '${bestSlot.start}', '${bestSlot.end}')">
+                        <i class="fas fa-magic"></i>
+                        <span>Quick Fix: ${bestSlot.start}-${bestSlot.end}</span>
+                        <small>(${timeDiff} ${direction})</small>
+                    </div>
+                `;
+            } else {
+                // Show that options exist but are distant
+                const allSlots = this.getSortedAvailableSlots(event);
+                if (allSlots.length > 0) {
+                    quickRescheduleButton = `
+                        <div class="quick-reschedule distant" onclick="event.stopPropagation(); scheduler.showEventModal(scheduler.events.find(e => e.id === ${event.id}))">
+                            <i class="fas fa-search"></i>
+                            <span>View ${allSlots.length} Available Slots</span>
+                        </div>
+                    `;
+                }
+            }
+        }
+
         div.innerHTML = `
             <div class="event-header">
                 <div class="event-name">${event.name}</div>
@@ -510,6 +1042,7 @@ class EventScheduler {
                     <span>${event.date}</span>
                 </div>
             </div>
+            ${quickRescheduleButton}
         `;
 
         return div;
@@ -798,7 +1331,8 @@ class EventScheduler {
         const modalBody = document.getElementById('modalBody');
 
         modalTitle.textContent = event.name;
-        modalBody.innerHTML = `
+        
+        let modalContent = `
             <div class="event-details">
                 <div class="event-detail">
                     <i class="fas fa-clock"></i>
@@ -830,6 +1364,45 @@ class EventScheduler {
                 </div>
             </div>
         `;
+
+        // Add rescheduling options for unscheduled events
+        if (!event.scheduled) {
+            const proximityGroups = this.getSlotsByProximity(event);
+            const totalSlots = Object.values(proximityGroups).flat().length;
+            
+            modalContent += `
+                <div class="rescheduling-section">
+                    <h4><i class="fas fa-magic"></i> Smart Rescheduling Options</h4>
+                    <p class="reschedule-info">This event conflicts with others. Available slots organized by proximity to original time (${event.startTime}):</p>
+                    
+                    <div class="slots-summary">
+                        ${this.generateSlotsSummary(proximityGroups)}
+                    </div>
+                    
+                    ${totalSlots > 0 ? this.generateProximityGroupsHTML(event, proximityGroups) : `
+                        <div class="no-slots-message">
+                            <i class="fas fa-exclamation-triangle"></i>
+                            <p>No available time slots found for this date. Consider:</p>
+                            <ul>
+                                <li>Changing the event date</li>
+                                <li>Reducing the event duration</li>
+                                <li>Removing conflicting events</li>
+                            </ul>
+                        </div>
+                    `}
+                    
+                    ${totalSlots > 0 ? `
+                        <div class="reschedule-actions">
+                            <button class="btn btn-secondary btn-sm" onclick="scheduler.showAllTimeSlots(${event.id})">
+                                <i class="fas fa-list"></i> View All ${totalSlots} Options
+                            </button>
+                        </div>
+                    ` : ''}
+                </div>
+            `;
+        }
+
+        modalBody.innerHTML = modalContent;
 
         document.getElementById('deleteEvent').onclick = () => {
             this.removeEvent(event.id);

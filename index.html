@@ -84,6 +84,15 @@
                             <span class="stat-value" id="unscheduledCount">0</span>
                         </div>
                     </div>
+                    
+                    <div class="priority-info">
+                        <h4><i class="fas fa-sort-amount-down"></i> Priority Logic</h4>
+                        <ol class="priority-list">
+                            <li><strong>Priority Level</strong> (5→1)</li>
+                            <li><strong>Input Order</strong> (first added first)</li>
+                            <li><strong>Graph Coloring</strong> (conflicts)</li>
+                        </ol>
+                    </div>
                 </div>
 
                 <div class="sidebar-section">
@@ -91,6 +100,9 @@
                     <div class="action-buttons">
                         <button class="btn btn-secondary" id="rescheduleBtn">
                             <i class="fas fa-sync-alt"></i> Reschedule All
+                        </button>
+                        <button class="btn btn-secondary" id="autoRescheduleBtn">
+                            <i class="fas fa-magic"></i> Auto-Reschedule: OFF
                         </button>
                         <button class="btn btn-secondary" id="clearBtn">
                             <i class="fas fa-trash"></i> Clear All
