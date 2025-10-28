@@ -160,6 +160,13 @@ class EventScheduler {
                     const eventDate = new Date(event.date);
                     return eventDate >= today;
                 });
+                
+                // Add missing fields to existing events
+                this.events.forEach(event => {
+                    if (event.color === undefined) event.color = -1;
+                    if (event.degree === undefined) event.degree = 0;
+                });
+                
                 // Clean up any duplicates that may have been saved earlier
                 this.dedupeEvents();
             }
@@ -226,7 +233,9 @@ class EventScheduler {
             duration: eventData.duration,
             priority: eventData.priority,
             date: eventData.date || this.formatDate(new Date()),
-            scheduled: true
+            scheduled: true,
+            color: -1,  // Graph coloring result (-1 = uncolored)
+            degree: 0   // Number of conflicts (for Welsh-Powell sorting)
         };
 
         // Calculate end time
@@ -252,6 +261,9 @@ class EventScheduler {
     detectConflicts() {
         this.conflicts = [];
         
+        // Reset degrees
+        this.events.forEach(event => event.degree = 0);
+        
         for (let i = 0; i < this.events.length; i++) {
             for (let j = i + 1; j < this.events.length; j++) {
                 // Only check conflicts for events on the same date
@@ -259,12 +271,18 @@ class EventScheduler {
                     this.conflicts.push([this.events[i].id, this.events[j].id]);
                     this.events[i].scheduled = false;
                     this.events[j].scheduled = false;
+                    // Count degrees for Welsh-Powell
+                    this.events[i].degree++;
+                    this.events[j].degree++;
                 }
             }
         }
 
-        // Apply greedy scheduling
+        // Apply greedy scheduling first
         this.applyGreedyScheduling();
+        
+        // Apply Welsh-Powell coloring for unscheduled events
+        this.welshPowellColoring();
     }
 
     eventsOverlap(event1, event2) {
@@ -322,6 +340,56 @@ class EventScheduler {
                 }
             }
         });
+    }
+
+    welshPowellColoring() {
+        // Initialize all colors to -1 (uncolored)
+        this.events.forEach(event => event.color = -1);
+        
+        // Create a copy of events sorted by degree (descending)
+        const sortedEvents = [...this.events].sort((a, b) => {
+            if (b.degree !== a.degree) {
+                return b.degree - a.degree; // Higher degree first
+            }
+            return a.id - b.id; // Stable sort by ID
+        });
+        
+        console.log('Welsh-Powell Coloring - Events by degree:', sortedEvents.map(e => ({name: e.name, degree: e.degree})));
+        
+        // Color each event in sorted order
+        sortedEvents.forEach(event => {
+            const usedColors = new Set();
+            
+            // Check colors of conflicting events
+            this.conflicts.forEach(([id1, id2]) => {
+                let conflictingEvent = null;
+                if (id1 === event.id) {
+                    conflictingEvent = this.events.find(e => e.id === id2);
+                } else if (id2 === event.id) {
+                    conflictingEvent = this.events.find(e => e.id === id1);
+                }
+                
+                if (conflictingEvent && conflictingEvent.color !== -1) {
+                    usedColors.add(conflictingEvent.color);
+                }
+            });
+            
+            // Find the minimum available color
+            let color = 0;
+            while (usedColors.has(color)) {
+                color++;
+            }
+            
+            // Assign color to the original event
+            const originalEvent = this.events.find(e => e.id === event.id);
+            if (originalEvent) {
+                originalEvent.color = color;
+                console.log(`Assigned color ${color} to event "${originalEvent.name}" (degree: ${originalEvent.degree})`);
+            }
+        });
+        
+        // Log final coloring results
+        console.log('Final coloring:', this.events.map(e => ({name: e.name, color: e.color, degree: e.degree})));
     }
 
     rescheduleAll() {
@@ -440,8 +508,22 @@ class EventScheduler {
         // Create SVG for graph visualization
         const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
         svg.setAttribute('width', '100%');
-        svg.setAttribute('height', '400');
-        svg.setAttribute('viewBox', '0 0 800 400');
+        svg.setAttribute('height', '450');
+        svg.setAttribute('viewBox', '0 0 800 450');
+        
+        // Add legend
+        const legendGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+        legendGroup.setAttribute('transform', 'translate(20, 410)');
+        
+        // Legend text
+        const legendText = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        legendText.setAttribute('x', 0);
+        legendText.setAttribute('y', 0);
+        legendText.setAttribute('font-size', '12');
+        legendText.setAttribute('fill', '#4a5568');
+        legendText.textContent = 'Colors: Graph Coloring (conflicted events) | Priority-based (non-conflicted events)';
+        legendGroup.appendChild(legendText);
+        svg.appendChild(legendGroup);
 
         // Calculate positions for nodes in a circle
         const centerX = 400;
@@ -458,9 +540,18 @@ class EventScheduler {
             node.setAttribute('cx', x);
             node.setAttribute('cy', y);
             node.setAttribute('r', 25);
-            node.setAttribute('fill', this.getColorFromPriority(event.priority));
-            node.setAttribute('stroke', 'white');
-            node.setAttribute('stroke-width', '3');
+            node.setAttribute('fill', this.getColorFromGraphColoring(event));
+            
+            // Different border for graph-colored vs priority-colored events
+            if (event.degree > 0 && event.color !== -1) {
+                node.setAttribute('stroke', '#2d3748'); // Dark border for graph-colored
+                node.setAttribute('stroke-width', '4');
+                node.setAttribute('stroke-dasharray', '5,3'); // Dashed border
+            } else {
+                node.setAttribute('stroke', 'white'); // White border for priority-colored
+                node.setAttribute('stroke-width', '3');
+            }
+            
             node.setAttribute('class', 'graph-node');
             node.onclick = () => this.showEventModal(event);
 
@@ -711,6 +802,14 @@ class EventScheduler {
                     <i class="fas fa-calendar"></i>
                     <strong>Date:</strong> ${this.formatDateDisplay(event.date)}
                 </div>
+                <div class="event-detail">
+                    <i class="fas fa-palette"></i>
+                    <strong>Graph Color:</strong> ${event.color !== -1 ? `Color ${event.color}` : 'Not assigned'}
+                </div>
+                <div class="event-detail">
+                    <i class="fas fa-project-diagram"></i>
+                    <strong>Conflicts:</strong> ${event.degree} event(s)
+                </div>
             </div>
         `;
 
@@ -773,6 +872,28 @@ class EventScheduler {
             5: '#e53e3e'
         };
         return colors[priority] || '#667eea';
+    }
+
+    getColorFromGraphColoring(event) {
+        // If event has conflicts, use graph coloring colors
+        if (event.degree > 0 && event.color !== -1) {
+            const graphColors = [
+                '#667eea', // Color 0 - Blue
+                '#f093fb', // Color 1 - Pink
+                '#4facfe', // Color 2 - Light Blue
+                '#43e97b', // Color 3 - Green
+                '#fa709a', // Color 4 - Rose
+                '#fee140', // Color 5 - Yellow
+                '#a8edea', // Color 6 - Cyan
+                '#d299c2', // Color 7 - Purple
+                '#89f7fe', // Color 8 - Sky Blue
+                '#66a6ff'  // Color 9 - Periwinkle
+            ];
+            return graphColors[event.color % graphColors.length];
+        }
+        
+        // For non-conflicted events, use priority-based colors
+        return this.getColorFromPriority(event.priority);
     }
 }
 
