@@ -13,7 +13,7 @@ class EventScheduler {
         this.initializeEventListeners();
         this.setDefaultDate();
         this.loadEventsFromStorage();
-        this.updateDisplay();
+        // updateDisplay() is now called from loadEventsFromStorage() after conflicts are detected
     }
 
     initializeEventListeners() {
@@ -118,6 +118,8 @@ class EventScheduler {
         try {
             localStorage.setItem('eventScheduler_events', JSON.stringify(this.events));
             localStorage.setItem('eventScheduler_nextId', this.nextId.toString());
+            // Also save conflicts for complete state restoration
+            localStorage.setItem('eventScheduler_conflicts', JSON.stringify(this.conflicts));
         } catch (error) {
             console.error('Error saving events to storage:', error);
         }
@@ -169,15 +171,34 @@ class EventScheduler {
                 
                 // Clean up any duplicates that may have been saved earlier
                 this.dedupeEvents();
+                
+                // ✅ FIX: Rebuild conflicts and apply algorithms after loading
+                if (this.events.length > 0) {
+                    console.log('🔄 Reloaded events:', this.events.map(e => ({name: e.name, time: e.startTime, date: e.date})));
+                    this.detectConflicts();
+                    console.log('🔗 Conflicts after reload:', this.conflicts.length, 'conflicts found');
+                    console.log('📊 Conflict details:', this.conflicts);
+                } else {
+                    console.log('📭 No events loaded from storage');
+                }
             }
             
             if (savedNextId) {
                 this.nextId = parseInt(savedNextId);
             }
+            
+            // Update display after everything is loaded and conflicts are detected
+            // Use setTimeout to ensure DOM is ready and conflicts are properly processed
+            setTimeout(() => {
+                this.updateDisplay();
+            }, 0);
         } catch (error) {
             console.error('Error loading events from storage:', error);
             this.events = [];
             this.nextId = 1;
+            setTimeout(() => {
+                this.updateDisplay(); // Still need to update display even if loading fails
+            }, 0);
         }
     }
 
